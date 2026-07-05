@@ -41,7 +41,7 @@ if not os.getenv("OPENAI_API_KEY"):
 from langchain_community.callbacks import get_openai_callback
 
 import jd_library as jdlib
-from rag_pipeline import build_vector_store, get_evaluation_chain, evaluate_resume
+from rag_pipeline import build_vector_store, get_evaluation_chain, evaluate_resume, rebalance_scores
 
 
 st.set_page_config(page_title="Candidate Dossier — Resume Screening", layout="wide")
@@ -365,6 +365,10 @@ def ensure_evaluated(names):
                 result = evaluate_resume(
                     st.session_state["vector_store"], chain, edited_jd_text, name
                 )
+                # Rebalance ONCE, right here, using this result's own skill
+                # ratio - NOT repeated on already-cached results later, which
+                # would compound the blend further each time this runs.
+                rebalance_scores([result])
                 st.session_state["evaluated_cache"][name] = result
             except RuntimeError as e:
                 # evaluate_resume already retried internally and gave up -
@@ -373,6 +377,7 @@ def ensure_evaluated(names):
                 st.error(f"Couldn't evaluate {name} right now: {e}")
                 continue
         total_cost, total_tokens = cb.total_cost, cb.total_tokens
+
     return total_cost, total_tokens
 
 
@@ -467,8 +472,24 @@ def route_message(user_text: str) -> str:
             return "Sorry, I couldn't evaluate that candidate right now - please try again."
         return "".join(render_card(st.session_state["evaluated_cache"][n]) for n in ok)
 
-    # Default: no specific candidate named, no known command matched ->
-    # evaluate everyone uploaded so far against the current JD.
+    # Default: no specific candidate named, no known command matched.
+    # Only fall through to "evaluate everyone" if the message actually looks
+    # resume/screening related - otherwise, respond helpfully instead of
+    # silently spending API calls on an unrelated message like "tell me a joke".
+    RESUME_INTENT_KEYWORDS = [
+        "evaluate", "resume", "resumes", "candidate", "candidates",
+        "score", "screen", "assess", "review", "hire", "hiring", "cv",
+    ]
+    if not any(kw in text for kw in RESUME_INTENT_KEYWORDS):
+        return (
+            "I'm a resume screening assistant, so I'm not able to help with that. "
+            "Try asking things like:\n\n"
+            "- *\"Evaluate all resumes\"*\n"
+            "- *\"Compare Ananya and Rahul\"*\n"
+            "- *\"What skills is Meera missing?\"*\n"
+            "- *\"Who's the best candidate?\"*"
+        )
+
     ensure_evaluated(candidates)
     ok = available(candidates)
     if not ok:
