@@ -361,10 +361,17 @@ def ensure_evaluated(names):
     total_cost, total_tokens = 0.0, 0
     with get_openai_callback() as cb:
         for name in to_run:
-            result = evaluate_resume(
-                st.session_state["vector_store"], chain, edited_jd_text, name
-            )
-            st.session_state["evaluated_cache"][name] = result
+            try:
+                result = evaluate_resume(
+                    st.session_state["vector_store"], chain, edited_jd_text, name
+                )
+                st.session_state["evaluated_cache"][name] = result
+            except RuntimeError as e:
+                # evaluate_resume already retried internally and gave up -
+                # show a friendly message instead of an unhandled crash with
+                # a raw traceback visible to whoever's using the deployed app.
+                st.error(f"Couldn't evaluate {name} right now: {e}")
+                continue
         total_cost, total_tokens = cb.total_cost, cb.total_tokens
     return total_cost, total_tokens
 
@@ -405,25 +412,41 @@ def route_message(user_text: str) -> str:
     text = user_text.lower()
     mentioned = find_mentioned_candidates(user_text, candidates)
 
+    def available(names):
+        """Filters to only candidates that actually made it into the cache -
+        protects against a KeyError if one candidate's evaluation failed
+        even after evaluate_resume's internal retries."""
+        cache = st.session_state["evaluated_cache"]
+        return [n for n in names if n in cache]
+
     if "compare" in text:
         targets = mentioned if mentioned else candidates
         if len(targets) < 2:
             return "I need at least two candidates to compare - upload another resume, or ask me to evaluate just one."
         ensure_evaluated(targets)
-        evals = [st.session_state["evaluated_cache"][n] for n in targets]
+        ok = available(targets)
+        if len(ok) < 2:
+            return "Not enough candidates evaluated successfully to compare - try again."
+        evals = [st.session_state["evaluated_cache"][n] for n in ok]
         return "**Comparison:**\n\n" + render_comparison_table(evals)
 
     if "missing" in text and "skill" in text:
         targets = mentioned if mentioned else candidates
         ensure_evaluated(targets)
+        ok = available(targets)
+        if not ok:
+            return "Sorry, I couldn't evaluate that candidate right now - please try again."
         return "**Missing skills:**\n\n" + "".join(
-            render_missing_skills_only(st.session_state["evaluated_cache"][n]) for n in targets
+            render_missing_skills_only(st.session_state["evaluated_cache"][n]) for n in ok
         )
 
     if any(kw in text for kw in ["best candidate", "who should", "recommend", "rank"]):
         ensure_evaluated(candidates)
+        ok = available(candidates)
+        if not ok:
+            return "Sorry, I couldn't evaluate any candidates right now - please try again."
         evals = sorted(
-            (st.session_state["evaluated_cache"][n] for n in candidates),
+            (st.session_state["evaluated_cache"][n] for n in ok),
             key=lambda r: r.match_score, reverse=True,
         )
         best = evals[0]
@@ -439,12 +462,18 @@ def route_message(user_text: str) -> str:
 
     if mentioned:
         ensure_evaluated(mentioned)
-        return "".join(render_card(st.session_state["evaluated_cache"][n]) for n in mentioned)
+        ok = available(mentioned)
+        if not ok:
+            return "Sorry, I couldn't evaluate that candidate right now - please try again."
+        return "".join(render_card(st.session_state["evaluated_cache"][n]) for n in ok)
 
     # Default: no specific candidate named, no known command matched ->
     # evaluate everyone uploaded so far against the current JD.
     ensure_evaluated(candidates)
-    return "".join(render_card(st.session_state["evaluated_cache"][n]) for n in candidates)
+    ok = available(candidates)
+    if not ok:
+        return "Sorry, I couldn't evaluate any candidates right now - please try again."
+    return "".join(render_card(st.session_state["evaluated_cache"][n]) for n in ok)
 
 
 # ── Chat transcript ──────────────────────────────────────────────────
