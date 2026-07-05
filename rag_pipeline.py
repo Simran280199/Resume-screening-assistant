@@ -174,6 +174,31 @@ def _score_is_inconsistent(result: ResumeEvaluation) -> bool:
 MAX_CONSISTENCY_RETRIES = 2  # up to 3 total LLM calls before we stop trusting it
 
 
+def rebalance_scores(results: list) -> None:
+    """Ensures cross-candidate score comparability for candidates evaluated
+    against the SAME job description. Each candidate is scored in a
+    SEPARATE, independent LLM call - nothing guarantees those calls stay
+    consistently calibrated relative to each other, even at temperature 0.
+    This can produce illogical results: e.g. Candidate A has more matching
+    skills than Candidate B, but A's independent call happened to score
+    lower than B's.
+
+    Fix: blend each candidate's LLM score with an objective, directly
+    comparable skill-ratio score (matched / total skills mentioned).
+    Modifies results IN PLACE - also re-applies score_to_recommendation
+    since match_score changes.
+    """
+    for r in results:
+        matched = len(r.matching_skills)
+        missing = len(r.missing_skills)
+        total = matched + missing
+        if total == 0:
+            continue
+        skill_score = (matched / total) * 100
+        r.match_score = round(0.5 * r.match_score + 0.5 * skill_score)
+        r.hiring_recommendation = score_to_recommendation(r.match_score)
+
+
 def evaluate_resume(vector_store, evaluation_chain, job_description: str, candidate_name: str) -> ResumeEvaluation:
     chunks = retrieve_relevant_chunks(vector_store, query=job_description, candidate_name=candidate_name)
     resume_context = _format_chunks(chunks)
