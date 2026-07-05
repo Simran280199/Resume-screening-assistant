@@ -1,0 +1,16 @@
+# Secrets - NEVER commit these
+.env
+.streamlit/secrets.toml
+
+# Python environment
+myenv77/
+__pycache__/
+*.pyc
+
+# Local runtime data (regenerates automatically, don't need in git)
+jd_library.json
+vector_stores/
+
+# OS/editor junk
+.DS_Store
+.vscode/
