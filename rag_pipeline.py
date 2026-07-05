@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 # ── Config ───────────────────────────────────────────────────────────
 LLM_MODEL = "gpt-4o-mini"
 LLM_TEMPERATURE = 0.0
-MAX_OUTPUT_TOKENS = 1500
+MAX_OUTPUT_TOKENS = 2000
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
@@ -183,13 +183,38 @@ def evaluate_resume(vector_store, evaluation_chain, job_description: str, candid
         "resume_context": resume_context,
     }
 
-    result = evaluation_chain.invoke(inputs)
+    # WHY WE CATCH EXCEPTIONS HERE: an LLM call can occasionally return a
+    # malformed/truncated response (e.g. hitting the token limit mid-JSON),
+    # which raises a ValidationError when Pydantic tries to build
+    # ResumeEvaluation from an incomplete result. Without this retry, that
+    # single bad response would crash the entire Streamlit app with a raw
+    # traceback visible to whoever's using it - unacceptable for anything
+    # actually deployed. We retry a few times before giving up cleanly.
+    result = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            result = evaluation_chain.invoke(inputs)
+            break
+        except Exception as e:  # noqa: BLE001 - deliberately broad: any LLM/parsing failure should trigger a retry
+            last_error = e
+            continue
+
+    if result is None:
+        raise RuntimeError(
+            f"Could not get a valid evaluation for '{candidate_name}' after 3 attempts. "
+            f"This usually means the response is being truncated or malformed. "
+            f"Last error: {last_error}"
+        )
 
     # Retry up to MAX_CONSISTENCY_RETRIES times if the score contradicts the
     # model's own skill lists.
     attempts = 0
     while _score_is_inconsistent(result) and attempts < MAX_CONSISTENCY_RETRIES:
-        result = evaluation_chain.invoke(inputs)
+        try:
+            result = evaluation_chain.invoke(inputs)
+        except Exception:
+            break  # keep the last valid result rather than crashing here
         attempts += 1
 
     # LAST RESORT: if it's STILL inconsistent after every retry, don't trust
