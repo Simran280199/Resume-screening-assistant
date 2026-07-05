@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 # ── Config ───────────────────────────────────────────────────────────
 LLM_MODEL = "gpt-4o-mini"
 LLM_TEMPERATURE = 0.0
-MAX_OUTPUT_TOKENS = 700
+MAX_OUTPUT_TOKENS = 1500
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
